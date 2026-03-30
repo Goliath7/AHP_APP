@@ -1,4 +1,5 @@
 import datetime
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -7,6 +8,9 @@ from letter_doc_builder import format_dates_for_shift, generate_letter_document
 from nariad_gui_final import generate_naryad_document
 from plan_rabot_GUI import generate_document as generate_plan_document
 from shared_data import LEADERS_FULL, LETTER_SUPERVISORS, STATIONS
+
+APP_DIR = Path(__file__).resolve().parent
+ADMIN_DATA_FILE = APP_DIR / "admin_data.json"
 
 
 def _inject_styles():
@@ -44,6 +48,96 @@ def _inject_styles():
     )
 
 
+def _normalize_list(items):
+    result = []
+    seen = set()
+    for item in items:
+        value = str(item).strip()
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _normalize_supervisors(items):
+    result = []
+    seen = set()
+    for name, phone in items:
+        n = str(name).strip()
+        p = str(phone).strip()
+        if n and (n, p) not in seen:
+            result.append((n, p))
+            seen.add((n, p))
+    return result
+
+
+def _load_admin_data_from_file():
+    if not ADMIN_DATA_FILE.exists():
+        return None
+    try:
+        raw = json.loads(ADMIN_DATA_FILE.read_text(encoding="utf-8"))
+        stations = _normalize_list(raw.get("stations", []))
+        leaders = _normalize_list(raw.get("leaders", []))
+        supervisors_raw = raw.get("letter_supervisors", [])
+        supervisors = []
+        for item in supervisors_raw:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                supervisors.append((item[0], item[1]))
+        supervisors = _normalize_supervisors(supervisors)
+        if stations and leaders and supervisors:
+            return {
+                "stations": stations,
+                "leaders": leaders,
+                "letter_supervisors": supervisors,
+            }
+    except Exception:
+        return None
+    return None
+
+
+def _save_admin_data_to_file(stations, leaders, letter_supervisors):
+    payload = {
+        "stations": stations,
+        "leaders": leaders,
+        "letter_supervisors": letter_supervisors,
+    }
+    ADMIN_DATA_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _init_reference_data():
+    if "cfg_stations" in st.session_state:
+        return
+
+    loaded = _load_admin_data_from_file()
+    if loaded:
+        st.session_state.cfg_stations = loaded["stations"]
+        st.session_state.cfg_leaders = loaded["leaders"]
+        st.session_state.cfg_letter_supervisors = loaded["letter_supervisors"]
+    else:
+        st.session_state.cfg_stations = list(STATIONS)
+        st.session_state.cfg_leaders = list(LEADERS_FULL)
+        st.session_state.cfg_letter_supervisors = list(LETTER_SUPERVISORS)
+
+
+def _get_stations():
+    return st.session_state.get("cfg_stations", list(STATIONS))
+
+
+def _get_leaders():
+    return st.session_state.get("cfg_leaders", list(LEADERS_FULL))
+
+
+def _get_letter_supervisors():
+    return st.session_state.get("cfg_letter_supervisors", list(LETTER_SUPERVISORS))
+
+
+def _admin_password():
+    try:
+        return st.secrets.get("admin_password", "admin123")
+    except Exception:
+        return "admin123"
+
+
 def _download_file(path, label, key):
     file_path = Path(path)
     with file_path.open("rb") as file_stream:
@@ -73,6 +167,15 @@ def _expand_dates(mode, single_date, range_dates):
 
 def _letter_tab():
     st.subheader("Исходящее письмо")
+    stations = _get_stations()
+    letter_supervisors = _get_letter_supervisors()
+
+    if not stations:
+        st.error("Список станций пуст. Заполните его во вкладке 'Админ'.")
+        return
+    if not letter_supervisors:
+        st.error("Список руководителей с телефонами пуст. Заполните его во вкладке 'Админ'.")
+        return
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -84,7 +187,7 @@ def _letter_tab():
         st.session_state.letter_items = []
 
     with st.form("letter_item_form", clear_on_submit=False):
-        station = st.selectbox("Станция", STATIONS, key="letter_station")
+        station = st.selectbox("Станция", stations, key="letter_station")
         shift = st.radio("Смена", ["Дневная", "Ночная"], horizontal=True, key="letter_shift")
 
         date_mode = st.radio("Режим дат", ["Одна дата", "Период"], horizontal=True, key="letter_date_mode")
@@ -102,7 +205,7 @@ def _letter_tab():
 
         sup_option = st.selectbox(
             "Руководитель работ",
-            [f"{name} — {phone}" for name, phone in LETTER_SUPERVISORS],
+            [f"{name} — {phone}" for name, phone in letter_supervisors],
             key="letter_supervisor",
         )
 
@@ -167,8 +270,14 @@ def _letter_tab():
 
 def _naryad_tab():
     st.subheader("Наряд")
-    station = st.selectbox("Станция", STATIONS, key="naryad_station")
-    leader = st.selectbox("Руководитель работ", LEADERS_FULL, key="naryad_leader")
+    stations = _get_stations()
+    leaders = _get_leaders()
+    if not stations or not leaders:
+        st.error("Справочники станций/руководителей пусты. Заполните их во вкладке 'Админ'.")
+        return
+
+    station = st.selectbox("Станция", stations, key="naryad_station")
+    leader = st.selectbox("Руководитель работ", leaders, key="naryad_leader")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -187,8 +296,14 @@ def _naryad_tab():
 
 def _plan_tab():
     st.subheader("План работ")
-    station = st.selectbox("Станция", STATIONS, key="plan_station")
-    supervisor = st.selectbox("Руководитель", LEADERS_FULL, key="plan_supervisor")
+    stations = _get_stations()
+    leaders = _get_leaders()
+    if not stations or not leaders:
+        st.error("Справочники станций/руководителей пусты. Заполните их во вкладке 'Админ'.")
+        return
+
+    station = st.selectbox("Станция", stations, key="plan_station")
+    supervisor = st.selectbox("Руководитель", leaders, key="plan_supervisor")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -211,9 +326,92 @@ def _plan_tab():
             st.error(str(error))
 
 
+def _admin_tab():
+    st.subheader("Админ-панель")
+
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    if not st.session_state.admin_authenticated:
+        st.info("Вход в админ-панель")
+        password = st.text_input("Пароль администратора", type="password", key="admin_password_input")
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            enter = st.button("Войти")
+        with col2:
+            if _admin_password() == "admin123":
+                st.warning("Используется пароль по умолчанию `admin123`. Лучше задать `admin_password` в секретах Streamlit.")
+        if enter:
+            if password == _admin_password():
+                st.session_state.admin_authenticated = True
+                st.success("Доступ разрешён")
+                st.rerun()
+            else:
+                st.error("Неверный пароль")
+        return
+
+    cols = st.columns([1, 1, 4])
+    with cols[0]:
+        if st.button("Выйти"):
+            st.session_state.admin_authenticated = False
+            st.rerun()
+    with cols[1]:
+        if st.button("Сбросить формы"):
+            st.session_state.letter_items = []
+            st.success("Формы очищены")
+
+    stations_text = st.text_area(
+        "Станции (по одной на строку)",
+        value="\n".join(_get_stations()),
+        height=220,
+    )
+    leaders_text = st.text_area(
+        "Руководители (ФИО, по одному на строку)",
+        value="\n".join(_get_leaders()),
+        height=220,
+    )
+    supervisors_text = st.text_area(
+        "Руководители для письма с телефонами (формат: ФИО | телефон)",
+        value="\n".join([f"{name} | {phone}" for name, phone in _get_letter_supervisors()]),
+        height=220,
+    )
+
+    if st.button("Сохранить справочники", type="primary"):
+        try:
+            stations = _normalize_list(stations_text.splitlines())
+            leaders = _normalize_list(leaders_text.splitlines())
+            supervisors = []
+            for line in supervisors_text.splitlines():
+                value = line.strip()
+                if not value:
+                    continue
+                if "|" in value:
+                    name, phone = [part.strip() for part in value.split("|", 1)]
+                else:
+                    name, phone = value, "не указан"
+                supervisors.append((name, phone))
+            supervisors = _normalize_supervisors(supervisors)
+
+            if not stations:
+                raise ValueError("Нужно указать хотя бы одну станцию")
+            if not leaders:
+                raise ValueError("Нужно указать хотя бы одного руководителя")
+            if not supervisors:
+                raise ValueError("Нужно указать хотя бы одного руководителя с телефоном")
+
+            st.session_state.cfg_stations = stations
+            st.session_state.cfg_leaders = leaders
+            st.session_state.cfg_letter_supervisors = supervisors
+            _save_admin_data_to_file(stations, leaders, supervisors)
+            st.success(f"Справочники сохранены ({ADMIN_DATA_FILE.name})")
+        except Exception as error:
+            st.error(str(error))
+
+
 def main():
     st.set_page_config(page_title="Генератор документов", page_icon="📄", layout="wide")
     _inject_styles()
+    _init_reference_data()
 
     st.markdown(
         """
@@ -225,13 +423,15 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3 = st.tabs(["Исходящее письмо", "Наряд", "План работ"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Исходящее письмо", "Наряд", "План работ", "Админ"])
     with tab1:
         _letter_tab()
     with tab2:
         _naryad_tab()
     with tab3:
         _plan_tab()
+    with tab4:
+        _admin_tab()
 
 
 if __name__ == "__main__":
