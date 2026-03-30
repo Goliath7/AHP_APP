@@ -71,8 +71,16 @@ def _normalize_supervisors(items):
     return result
 
 
-def _load_admin_data_from_file():
+def _admin_data_signature():
     if not ADMIN_DATA_FILE.exists():
+        return "missing"
+    stat = ADMIN_DATA_FILE.stat()
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
+@st.cache_data(show_spinner=False)
+def _read_admin_data_cached(signature):
+    if signature == "missing":
         return None
     try:
         raw = json.loads(ADMIN_DATA_FILE.read_text(encoding="utf-8"))
@@ -95,6 +103,10 @@ def _load_admin_data_from_file():
     return None
 
 
+def _load_admin_data_from_file():
+    return _read_admin_data_cached(_admin_data_signature())
+
+
 def _save_admin_data_to_file(stations, leaders, letter_supervisors):
     payload = {
         "stations": stations,
@@ -102,6 +114,7 @@ def _save_admin_data_to_file(stations, leaders, letter_supervisors):
         "letter_supervisors": letter_supervisors,
     }
     ADMIN_DATA_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _read_admin_data_cached.clear()
 
 
 def _init_reference_data():
@@ -133,9 +146,9 @@ def _get_letter_supervisors():
 
 def _admin_password():
     try:
-        return st.secrets.get("admin_password", "admin123")
+        return st.secrets.get("admin_password", "stalk3301")
     except Exception:
-        return "admin123"
+        return "stalk3301"
 
 
 def _download_file(path, label, key):
@@ -339,8 +352,8 @@ def _admin_tab():
         with col1:
             enter = st.button("Войти")
         with col2:
-            if _admin_password() == "admin123":
-                st.warning("Используется пароль по умолчанию `admin123`. Лучше задать `admin_password` в секретах Streamlit.")
+            if _admin_password() == "stalk3301":
+                st.warning("Используется пароль по умолчанию `stalk3301`. Лучше задать `admin_password` в секретах Streamlit.")
         if enter:
             if password == _admin_password():
                 st.session_state.admin_authenticated = True
