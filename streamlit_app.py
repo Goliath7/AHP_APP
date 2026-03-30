@@ -2,6 +2,7 @@ import datetime
 import json
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from letter_doc_builder import format_dates_for_shift, generate_letter_document
@@ -41,6 +42,23 @@ def _inject_styles():
             margin: 0.35rem 0 0;
             color: #d8ecff;
             font-size: 0.95rem;
+        }
+        .admin-card {
+            background: #ffffff;
+            border: 1px solid #d9e2ec;
+            border-radius: 12px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.8rem;
+        }
+        .admin-card h4 {
+            margin: 0 0 0.35rem 0;
+            color: #243b53;
+            font-size: 1rem;
+        }
+        .admin-card p {
+            margin: 0;
+            color: #486581;
+            font-size: 0.92rem;
         }
         </style>
         """,
@@ -346,14 +364,22 @@ def _admin_tab():
         st.session_state.admin_authenticated = False
 
     if not st.session_state.admin_authenticated:
-        st.info("Вход в админ-панель")
+        st.markdown(
+            """
+            <div class="admin-card">
+              <h4>Вход в админ-панель</h4>
+              <p>Доступ к редактированию справочников станций, руководителей и телефонов.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         password = st.text_input("Пароль администратора", type="password", key="admin_password_input")
         col1, col2 = st.columns([1, 5])
         with col1:
-            enter = st.button("Войти")
+            enter = st.button("Войти", key="admin_login_btn")
         with col2:
             if _admin_password() == "stalk3301":
-                st.warning("Используется пароль по умолчанию `stalk3301`. Лучше задать `admin_password` в секретах Streamlit.")
+                st.caption("Используется пароль по умолчанию `stalk3301`. Для прод-режима лучше задать `admin_password` в секретах Streamlit.")
         if enter:
             if password == _admin_password():
                 st.session_state.admin_authenticated = True
@@ -363,62 +389,120 @@ def _admin_tab():
                 st.error("Неверный пароль")
         return
 
-    cols = st.columns([1, 1, 4])
-    with cols[0]:
-        if st.button("Выйти"):
+    st.markdown(
+        """
+        <div class="admin-card">
+          <h4>Управление справочниками</h4>
+          <p>Изменения применяются сразу после сохранения и используются во всех вкладках.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    action_cols = st.columns([1, 1, 1, 3])
+    with action_cols[0]:
+        if st.button("Выйти", key="admin_logout_btn"):
             st.session_state.admin_authenticated = False
             st.rerun()
-    with cols[1]:
-        if st.button("Сбросить формы"):
+    with action_cols[1]:
+        if st.button("Сбросить формы", key="admin_reset_forms_btn"):
             st.session_state.letter_items = []
             st.success("Формы очищены")
+    with action_cols[2]:
+        if st.button("База по умолчанию", key="admin_reset_defaults_btn"):
+            st.session_state.cfg_stations = list(STATIONS)
+            st.session_state.cfg_leaders = list(LEADERS_FULL)
+            st.session_state.cfg_letter_supervisors = list(LETTER_SUPERVISORS)
+            _save_admin_data_to_file(st.session_state.cfg_stations, st.session_state.cfg_leaders, st.session_state.cfg_letter_supervisors)
+            st.success("Справочники сброшены к базовым значениям")
+            st.rerun()
 
-    stations_text = st.text_area(
-        "Станции (по одной на строку)",
-        value="\n".join(_get_stations()),
-        height=220,
-    )
-    leaders_text = st.text_area(
-        "Руководители (ФИО, по одному на строку)",
-        value="\n".join(_get_leaders()),
-        height=220,
-    )
-    supervisors_text = st.text_area(
-        "Руководители для письма с телефонами (формат: ФИО | телефон)",
-        value="\n".join([f"{name} | {phone}" for name, phone in _get_letter_supervisors()]),
-        height=220,
-    )
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Станций", len(_get_stations()))
+    metric_cols[1].metric("Руководителей", len(_get_leaders()))
+    metric_cols[2].metric("Телефонов в письме", len(_get_letter_supervisors()))
 
-    if st.button("Сохранить справочники", type="primary"):
-        try:
-            stations = _normalize_list(stations_text.splitlines())
-            leaders = _normalize_list(leaders_text.splitlines())
-            supervisors = []
-            for line in supervisors_text.splitlines():
-                value = line.strip()
-                if not value:
-                    continue
-                if "|" in value:
-                    name, phone = [part.strip() for part in value.split("|", 1)]
-                else:
-                    name, phone = value, "не указан"
-                supervisors.append((name, phone))
-            supervisors = _normalize_supervisors(supervisors)
+    if ADMIN_DATA_FILE.exists():
+        modified_at = datetime.datetime.fromtimestamp(ADMIN_DATA_FILE.stat().st_mtime)
+        st.caption(f"Файл настроек: `{ADMIN_DATA_FILE.name}` • обновлён {modified_at:%d.%m.%Y %H:%M:%S}")
+    else:
+        st.caption(f"Файл настроек: `{ADMIN_DATA_FILE.name}` не создан. Используются встроенные справочники.")
 
-            if not stations:
-                raise ValueError("Нужно указать хотя бы одну станцию")
-            if not leaders:
-                raise ValueError("Нужно указать хотя бы одного руководителя")
-            if not supervisors:
-                raise ValueError("Нужно указать хотя бы одного руководителя с телефоном")
+    edit_tab, raw_tab = st.tabs(["Редактор", "JSON"])
 
-            st.session_state.cfg_stations = stations
-            st.session_state.cfg_leaders = leaders
-            st.session_state.cfg_letter_supervisors = supervisors
-            _save_admin_data_to_file(stations, leaders, supervisors)
-            st.success(f"Справочники сохранены ({ADMIN_DATA_FILE.name})")
-        except Exception as error:
-            st.error(str(error))
+    with edit_tab:
+        st.markdown("##### Станции")
+        stations_df = pd.DataFrame({"Станция": _get_stations()})
+        edited_stations_df = st.data_editor(
+            stations_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="admin_stations_editor",
+        )
+
+        st.markdown("##### Руководители")
+        leaders_df = pd.DataFrame({"Руководитель": _get_leaders()})
+        edited_leaders_df = st.data_editor(
+            leaders_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="admin_leaders_editor",
+        )
+
+        st.markdown("##### Руководители для письма")
+        supervisors_df = pd.DataFrame(_get_letter_supervisors(), columns=["Руководитель", "Телефон"])
+        edited_supervisors_df = st.data_editor(
+            supervisors_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="admin_supervisors_editor",
+        )
+
+        if st.button("Сохранить справочники", type="primary", key="admin_save_dicts_btn"):
+            try:
+                stations = _normalize_list(edited_stations_df.get("Станция", []).tolist())
+                leaders = _normalize_list(edited_leaders_df.get("Руководитель", []).tolist())
+
+                supervisor_names = edited_supervisors_df.get("Руководитель", []).tolist()
+                supervisor_phones = edited_supervisors_df.get("Телефон", []).tolist()
+                supervisors = _normalize_supervisors(zip(supervisor_names, supervisor_phones))
+
+                if not stations:
+                    raise ValueError("Нужно указать хотя бы одну станцию")
+                if not leaders:
+                    raise ValueError("Нужно указать хотя бы одного руководителя")
+                if not supervisors:
+                    raise ValueError("Нужно указать хотя бы одного руководителя с телефоном")
+
+                st.session_state.cfg_stations = stations
+                st.session_state.cfg_leaders = leaders
+                st.session_state.cfg_letter_supervisors = supervisors
+                _save_admin_data_to_file(stations, leaders, supervisors)
+                st.success(f"Справочники сохранены ({ADMIN_DATA_FILE.name})")
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    with raw_tab:
+        preview = {
+            "stations": _get_stations(),
+            "leaders": _get_leaders(),
+            "letter_supervisors": _get_letter_supervisors(),
+        }
+        st.code(json.dumps(preview, ensure_ascii=False, indent=2), language="json")
+        if st.button("Обновить с диска", key="admin_reload_from_disk_btn"):
+            loaded = _load_admin_data_from_file()
+            if loaded:
+                st.session_state.cfg_stations = loaded["stations"]
+                st.session_state.cfg_leaders = loaded["leaders"]
+                st.session_state.cfg_letter_supervisors = loaded["letter_supervisors"]
+                st.success("Справочники перечитаны из файла")
+            else:
+                st.warning("Файл настроек отсутствует или повреждён")
+            st.rerun()
 
 
 def main():
